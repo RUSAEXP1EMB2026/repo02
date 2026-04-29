@@ -1,2 +1,4 @@
 # clasp の認証情報（絶対にコミットしない）
 .clasp.json
+GAS_scripts/.clasp.json
+GASscripts/.clasp.json
