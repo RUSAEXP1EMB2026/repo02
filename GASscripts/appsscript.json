@@ -2,6 +2,9 @@
   "timeZone": "America/New_York",
   "dependencies": {
   },
+  "executionApi": {
+    "access": "ANYONE"
+  },
   "exceptionLogging": "STACKDRIVER",
   "runtimeVersion": "V8"
 }
