@@ -1,495 +1,607 @@
-# n8n統合実装仕様書
+# 文書メタデータ
 
-- 文書名: n8n_integration
-- 位置づけ: n8nをオーケストレーターとして組み込むための実装仕様（設計書・要求仕様書_コア機能実装.mdの補助）
+- 文書名: API仕様書
+- 位置づけ: プロジェクト全体で使用する外部API・内部Webhookの仕様定義
 - 正本/補助: 正本
-- 最終更新: 2026-04-29
+- 最終更新: 2026-04-27
 
 ---
 
-## 思考プロセス（設計判断の根拠）
+## 対象APIの一覧
 
-本仕様書を作成するにあたり、GAS単独構成との比較で、n8n導入が解決する課題を以下に整理した。
-
-| 課題 | GAS単独の限界 | n8nで解決できること |
+| API | 用途 | Phase |
 |---|---|---|
-| リトライ制御 | 手動でループ・sleep実装が必要 | HTTPノードの「Retry設定」で宣言的に設定可能 |
-| HITL（Discordボタン待機） | doPost()のコールバック管理が複雑 | 「Wait for Webhook」ノードでワークフローを一時停止し、ボタン押下を待機できる |
-| エラーの可視化 | Logger.logのみ、実行履歴なし | 実行履歴UIで各ノードの入出力を遡れる。Error Triggerで異常を一元補足 |
-| GASトリガーの精度 | ±数分のズレが仕様上保証されない | n8nのScheduleノード（cron式）で精度高く定時実行できる |
-| Phase 2 GPS受信エンドポイント | doPost()をGAS側に実装しGASのWebhook URLを外部公開する必要がある | n8nのWebhookノードがエンドポイントを提供し、GASを外部公開しなくて済む |
-| 条件分岐の保守性 | if/elseがコード内に埋没 | Switchノード・IFノードでフローが視覚化され、メンバー全員がロジックを把握できる |
-
-**結論：** Phase 1（在宅空調制御）はGASで実装済みの資産を活かしつつ、n8nをオーケストレーターとして外側に被せる。Phase 2（GPS連携・HITL）はn8nで新規実装する。
+| Nature Remo 3 API | センサ値取得・機器制御 | Phase 1 / Phase 2 |
+| Discord Webhook API | 各種通知送信 | Phase 1 / Phase 2 |
+| GAS doPost Webhook | GPS座標受信（IFTTTから） | Phase 2 |
 
 ---
 
-## 1. 導入の目的とメリット
+## 共通仕様
 
-### 1.1 目的
+### ベースURL
 
-既存のGAS実装（`main.js` / `remo.js` / `discord.js` 等）を破棄せず、n8nをその上位の「ワークフロー制御層」として追加する。これにより以下を達成する。
-
-1. **運用の堅牢性向上** — APIエラー時のリトライ・アラート通知をコード変更なしで管理できる
-2. **HITL（Human-in-the-Loop）の実現** — 外出時の消し忘れ通知でDiscordボタン押下を待機し、確認後に機器をオフにするインタラクティブフローを構築できる
-3. **Phase 2への拡張容易性** — GPSエンドポイント受信・ジオフェンス判定をn8nワークフローとして独立させ、GASのコード変更を最小限に抑える
-4. **チーム全員への可視性** — ノード構成図が設計書と対応し、コードを読まなくてもフローを把握できる
-
-### 1.2 導入しないこと（スコープ外）
-
-- GASのPhase 1実装（`main.js` 〜 `discord.js`）の書き換え
-- スプレッドシートのシート構成変更
-- n8nによるスプレッドシートの直接操作（読み書きはGAS経由に統一する）
-
----
-
-## 2. システム構成図案
-
-### 2.1 コンポーネント役割分担
-
-| コンポーネント | 役割 | 担当する処理 |
-|---|---|---|
-| **n8n** | オーケストレーター | ワークフローのトリガー、条件分岐、リトライ、HITL待機、ノード間のデータ受け渡し |
-| **GAS（既存）** | ビジネスロジック実行エンジン | センサ取得、空調制御判定、スプレッドシート読み書き、不快指数算出 |
-| **Google スプレッドシート** | データストア（DB） | 設定値・センサログ・操作ログの永続化 |
-| **Nature Remo 3 API** | IoTデバイス制御 | センサ値取得、エアコン操作命令の送受信 |
-| **Discord Webhook API** | 通知・操作UI | 消し忘れ通知・クーラー操作通知・定時報告・HITLボタンの提供 |
-| **IFTTT / iOS Shortcuts** | GPS送信クライアント | スマートフォンのGPS座標をn8nのWebhookエンドポイントへ2分ごとにPOST |
-
-### 2.2 データフロー概略
-
-```
-[スマートフォン（IFTTT/Shortcuts）]
-  │ GPS座標 POST（2分ごと）
-  ▼
-[n8n: Webhook Trigger]
-  │ ジオフェンス判定（n8n Codeノード or GAS Webhook呼び出し）
-  │
-  ├─ 外出確定 ─→ [Nature Remo API] 機器状態取得
-  │               → [Discord] HITL通知（ボタン付き）
-  │               → ユーザー操作待機（Wait for Webhook）
-  │               → [Nature Remo API] オフ命令
-  │               → [GAS Webhook] 操作ログ記録
-  │
-  └─ 在宅確定 ─→ [n8n: Schedule Trigger（5分おき）]
-                  → [GAS Webhook] runEvery5Minutes を呼び出す
-                  → GASが全処理を実行（既存コード）
-                  → 結果をn8nが受け取り、エラー時はError Triggerへ
-```
-
----
-
-## 3. n8nワークフロー詳細
-
-### 3.1 外出・帰宅判定および通知フロー
-
-#### トリガー設定
-
-| 項目 | 設定値 |
+| API | ベースURL |
 |---|---|
-| ノード種別 | Webhook（POST） |
-| エンドポイントパス | `/gps-update` |
-| 認証 | Header Auth（`X-GPS-Token: {事前共有トークン}`）|
-| 想定リクエストBody | `{ "lat": 34.9756, "lon": 135.9588, "timestamp": "2026-04-29T10:00:00Z" }` |
+| Nature Remo 3 API | `https://api.nature.global/1` |
+| Discord Webhook API | スプレッドシート B9 セルに設定したURL |
 
-IFTTTの場合は「Make a web request」アクションでn8nのWebhook URLを指定する。iOS Shortcutsの場合はHTTPリクエストアクションで同URLにPOSTする。
+### 認証（Nature Remo 3 API共通）
 
-#### 主要ノード構成
-
-```
-[1] Webhook Trigger（/gps-update）
-  ↓
-[2] Codeノード: ジオフェンス判定
-  ↓
-[3] IFノード: 外出/在宅/変化なし の3分岐
-  │
-  ├─ 外出確定（2回連続ジオフェンス逸脱）
-  │   ↓
-  │  [4] HTTP Requestノード: Nature Remo GET /1/devices
-  │   ↓
-  │  [5] Codeノード: オン状態の機器を抽出
-  │   ↓
-  │  [6] IFノード: オン機器が1台以上か？
-  │   ├─ Yes
-  │   │   ↓
-  │   │  [7] HTTP Requestノード: Discord Webhook POST（ボタン付きメッセージ）
-  │   │   ↓
-  │   │  [8] Wait for Webhookノード（HITLポイント）
-  │   │   ↓
-  │   │  [9] HTTP Requestノード: Nature Remo POST（電源オフ命令）
-  │   │   ↓
-  │   │  [10] HTTP Requestノード: GAS Webhook（操作ログ記録）
-  │   │   ↓
-  │   │  [11] HTTP Requestノード: Discord Webhook POST（オフ完了通知）
-  │   └─ No → 終了（通知なし）
-  │
-  ├─ 帰宅確定（2回連続ジオフェンス復帰）
-  │   ↓
-  │  [4'] HTTP Requestノード: GAS Webhook（在宅ステータスリセット）
-  │   ↓
-  │  [5'] HTTP Requestノード: Discord Webhook POST（帰宅通知）
-  │
-  └─ 変化なし → 終了（処理なし）
-```
-
-#### ノード[2] Codeノード: ジオフェンス判定の実装仕様
+すべてのNature Remo APIリクエストに以下のヘッダーを付与する
 
 ```javascript
-// n8n Codeノード（JavaScript）
-// 入力: items[0].json = { lat, lon, timestamp }
-// スプレッドシートから前回GPS記録を別ノードで取得済み前提
-
-const HOME_LAT  = $node["Sheet: 設定値"].json.homeLat;   // B2
-const HOME_LON  = $node["Sheet: 設定値"].json.homeLon;   // B3
-const RADIUS_KM = $node["Sheet: 設定値"].json.geofenceKm; // B4
-const PREV_STATUS = $node["Sheet: GPS前回"].json.consecutiveCount; // 連続カウント
-
-const lat1 = HOME_LAT * Math.PI / 180;
-const lat2 = items[0].json.lat * Math.PI / 180;
-const dLat = (items[0].json.lat - HOME_LAT) * Math.PI / 180;
-const dLon = (items[0].json.lon - HOME_LON) * Math.PI / 180;
-
-const a = Math.sin(dLat/2)**2 +
-          Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon/2)**2;
-const distance = 2 * 6371 * Math.asin(Math.sqrt(a)); // km
-
-const isOutside = distance > RADIUS_KM;
-
-return [{ json: {
-  distance,
-  isOutside,
-  lat: items[0].json.lat,
-  lon: items[0].json.lon,
-  timestamp: items[0].json.timestamp
-}}];
+var headers = {
+  'Authorization': 'Bearer ' + token
+  // Content-Type は指定しない（POST時も同様）
+};
 ```
 
-**Note:** 連続2回判定のカウント管理はスプレッドシートの専用セル（例：Settings シートの B12「外出連続カウント」）に書き込み・読み出しする。GASのステートレス問題と同様に、n8nもワークフロー実行間でメモリを持たないため、スプレッドシートをステート管理DBとして利用する。
+> **⚠️ 注意:** `Content-Type: application/json` を指定するとAPIが正常に応答しない。POSTリクエストでも指定禁止。
 
-#### HITL（Human-in-the-Loop）の実装手順
+### エラー処理（共通ルール）
 
-**概要：** ユーザーがDiscordで「オフにする」ボタンを押した時点でn8nワークフローが再開し、Nature Remo APIへオフ命令を送信する。
+| 条件 | 動作 |
+|---|---|
+| HTTPステータスが200以外 | 1回リトライを実行する |
+| リトライも失敗 | `{ success: false, error: エラー内容 }` を返す |
+| エラー発生時 | エラー発生日時・対象API・エラー内容をスプレッドシートに記録する |
+| エラー発生時 | Discordの指定チャンネルへエラー通知を送信する |
 
-**手順：**
+---
 
-1. **ノード[7] Discordへのボタン付きメッセージ送信**
+# Phase 1
 
-Discord Webhook APIの `components` フィールドを使用してボタンを含むメッセージを送信する。
+## Nature Remo 3 API
 
+---
+
+### GET /devices — センサ値取得
+
+**用途:** 室温・湿度・照度をNature Remo 3から取得する
+
+**エンドポイント:**
+```
+GET https://api.nature.global/1/devices
+```
+
+**リクエスト:**
+```javascript
+var options = {
+  "method": "get",
+  "headers": headers
+};
+var response = UrlFetchApp.fetch("https://api.nature.global/1/devices", options);
+```
+
+**レスポンス（成功時 HTTP 200）:**
 ```json
-{
-  "content": "⚠️ 外出を検知しました。以下の機器がオンのままです。\n- エアコン（設定温度：23℃）\n- テレビ\n\nダッシュボード: https://docs.google.com/spreadsheets/d/【ID】",
-  "components": [{
-    "type": 1,
-    "components": [{
-      "type": 2,
-      "style": 3,
-      "label": "すべてオフにする",
-      "custom_id": "turn_off_all"
-    }, {
-      "type": 2,
-      "style": 2,
-      "label": "このまま放置する",
-      "custom_id": "ignore"
-    }]
-  }]
+[
+  {
+    "id": "device-id-string",
+    "name": "エアコン",
+    "newest_events": {
+      "te": { "val": 26.5, "created_at": "2025-04-22T14:00:00Z" },
+      "hu": { "val": 72,   "created_at": "2025-04-22T14:00:00Z" },
+      "il": { "val": 340,  "created_at": "2025-04-22T14:00:00Z" }
+    }
+  }
+]
+```
+
+**レスポンスフィールド:**
+
+| フィールド | 型 | 説明 |
+|---|---|---|
+| `id` | 文字列 | デバイスID |
+| `name` | 文字列 | Remo上のデバイス名（スプレッドシート B10 と照合して対象デバイスを特定する） |
+| `newest_events.te.val` | 数値 | 室温（℃） |
+| `newest_events.hu.val` | 数値 | 湿度（%） |
+| `newest_events.il.val` | 数値 | 照度（lux） |
+
+**GAS実装例（getSensorData）:**
+```javascript
+function getSensorData(token, deviceName) {
+  var headers = { 'Authorization': 'Bearer ' + token };
+  var options = { "method": "get", "headers": headers };
+  var response = UrlFetchApp.fetch("https://api.nature.global/1/devices", options);
+  var devices = JSON.parse(response.getContentText());
+
+  for (var i = 0; i < devices.length; i++) {
+    if (devices[i].name === deviceName) {
+      var events = devices[i].newest_events;
+      return {
+        temp:        events.te.val,
+        humidity:    events.hu.val,
+        illuminance: events.il.val
+      };
+    }
+  }
+  return { success: false, error: "デバイスが見つかりません: " + deviceName };
 }
 ```
 
-**Note:** Discordのボタンインタラクションを受け取るにはDiscord Botトークン（Application Commands）が必要。Webhook URLだけでは双方向通信ができないため、n8nのWebhookエンドポイントをDiscord Bot Interaction URLとして登録する。
-
-2. **ノード[8] Wait for Webhookノード設定**
-
-| 項目 | 設定値 |
-|---|---|
-| ノード種別 | Wait |
-| Resume: Webhook | オン |
-| Webhook URL | n8nが自動生成（ユニーク） |
-| タイムアウト | 30分（タイムアウト後は「無視」扱いで終了） |
-| 認証 | なし（Discord側からのPOSTを受け取る） |
-
-3. **ボタン押下 → 再開フロー**
-
-ユーザーが「すべてオフにする」を押すと、Discord BotがインタラクションをノードWait URLへ転送し、ワークフローが再開してノード[9]（Nature Remo POST）へ進む。`custom_id: "ignore"` の場合はワークフローをその場で終了する。
-
----
-
-### 3.2 在宅時自動調温フロー
-
-#### スケジュール設定
-
-| 項目 | 設定値 |
-|---|---|
-| ノード種別 | Schedule Trigger |
-| Interval | Every 5 minutes |
-| Cron式（参考） | `*/5 * * * *` |
-
-**Note:** このScheduleトリガーはn8nが担うことで、GASのトリガー精度問題（±数分）を解消する。ただしPhase 1の移行段階では、GASの `runEvery5Minutes` トリガーはそのまま残し、n8nからGASのWebhookエンドポイントを叩く形を採る（段階的移行）。
-
-#### 主要ノード構成
-
-```
-[1] Schedule Trigger（5分ごと）
-  ↓
-[2] HTTP Requestノード: GAS Webhook（runEvery5Minutes 相当を呼び出す）
-  ↓
-[3] Codeノード: レスポンスのパース（操作有無・エラー有無を取得）
-  ↓
-[4] IFノード: GASからエラーが返ったか？
-  ├─ Yes → [Error Handlingフロー] へ（セクション4参照）
-  └─ No
-      ↓
-[5] IFノード: 操作が発生したか（aircon.js が何らかの制御を実施したか）？
-  ├─ Yes
-  │   ↓
-  │  [6] HTTP Requestノード: Discord Webhook POST（空調操作通知）
-  └─ No → 終了
-        ↓
-[7] IFノード: 定時通知タイミングか？
-  ├─ Yes（現在時刻 >= notifyStart かつ <= notifyEnd かつ 前回通知から notifyInterval 分経過）
-  │   ↓
-  │  [8] HTTP Requestノード: Discord Webhook POST（定時報告）
-  └─ No → 終了
-```
-
-#### 深夜時間帯除外ロジック（定時通知のみ）
-
-ノード[7]のIFノード内にJavaScript式で判定する。空調制御自体は24時間動作するが、定時通知は設定時間帯（デフォルト7:00〜23:00）に限定する。
-
+**戻り値:**
 ```javascript
-// n8n IFノードの条件式（例）
-const now = new Date();
-const hour = now.getHours();
-const notifyStart = $node["GAS: 設定値"].json.notifyStart; // 7
-const notifyEnd   = $node["GAS: 設定値"].json.notifyEnd;   // 23
-
-// 通知時間帯内かつ、前回通知からinterval分以上経過していること
-const inWindow = hour >= notifyStart && hour < notifyEnd;
-const elapsed  = (now - new Date($node["Sheet: 前回通知"].json.lastNotified)) / 60000;
-const interval = $node["GAS: 設定値"].json.notifyInterval; // 60
-
-return inWindow && elapsed >= interval;
+{ temp: 26.5, humidity: 72, illuminance: 340 }
 ```
-
-#### 条件分岐（除湿/冷房/停止）の可視化
-
-GASの `aircon.js` が実際の判定と制御を行うため、n8n側では結果をルーティングするのみとする。ただしGASを呼び出さずn8nだけで完結させる場合は、以下のSwitchノードで実現する。
-
-```
-[Switchノード: 空調モード判定]
-  ├─ Case 1: temp > tempMax AND acState == "停止"
-  │   → mode = "冷房" → Nature Remo POST (mode: "cool")
-  ├─ Case 2: humidity >= humThreshold AND temp <= tempMax AND acState != "除湿"
-  │   → mode = "除湿" → Nature Remo POST (mode: "dry")
-  ├─ Case 3: temp < tempMin AND (acState == "冷房" OR acState == "除湿")
-  │   → mode = "停止" → Nature Remo POST (button: "power-off")
-  └─ Default: 操作なし → 終了
-```
-
-#### Nature Remo APIのPOSTリクエスト設定（n8n HTTP Requestノード）
-
-要求仕様書_コア機能実装.md の注意事項を n8n HTTP Requestノードで再現する。
-
-| 設定項目 | 設定値 |
-|---|---|
-| Method | POST |
-| URL | `https://api.nature.global/1/appliances/{applianceId}/aircon_settings` |
-| Authentication | Header Auth: `Authorization: Bearer {APIトークン}` |
-| Body Content Type | **Form-Data（multipart/form-data）** ← `application/json` を指定しない |
-| Body Parameters | `temperature: "23"`, `button: ""` |
-
-**重要:** n8nのHTTP RequestノードでBody Content Typeを「Form-Data」または「x-www-form-urlencoded」に設定することで、`Content-Type: application/json` の付与と `JSON.stringify()` の両方を回避できる。これは `remo.js` の注意事項と同等の制約をn8n設定で実現するものである。
 
 ---
 
-## 4. エラー管理と非機能要求の実現
+### GET /appliances — applianceId取得
 
-### 4.1 リトライ戦略
+**用途:** エアコン制御に必要な `applianceId` を取得する。この値は変動しないため、初回取得後スプレッドシートに記録して使い回してよい。
 
-要求仕様: 「Nature Remo API または Discord Webhook の呼び出しが失敗した場合、1回リトライを実行し、それでも失敗した場合はDiscordへエラー通知を送信する」
-
-#### n8n HTTP Requestノードのリトライ設定
-
-すべてのHTTP RequestノードのOptionsで以下を設定する。
-
-| 設定項目 | 設定値 |
-|---|---|
-| Retry on Fail | オン |
-| Max Tries | 2（初回 + 1回リトライ） |
-| Wait Between Tries | 5000ms（5秒） |
-| Continue on Fail | **オン**（2回失敗後にエラーデータを次ノードへ渡す） |
-
-「Continue on Fail」をオンにすることで、2回失敗後もワークフローが停止せず、後続のエラーハンドリングノードへ処理が移る。
-
-### 4.2 Error Triggerノードによる異常捕捉
-
-n8nには「Error Trigger」専用ワークフローを用意する。これは他のワークフローでキャッチされなかったエラーを一元的に受け取る。
-
-#### エラー通知ワークフロー構成
-
+**エンドポイント:**
 ```
-[1] Error Trigger（ワークフロー全体のエラーを補足）
-  ↓
-[2] Codeノード: エラー情報を整形
-  ↓
-[3] HTTP Requestノード: Discord Webhook POST（エラー通知）
-  ↓
-[4] HTTP Requestノード: GAS Webhook（エラーログをスプレッドシートに記録）
+GET https://api.nature.global/1/appliances
 ```
 
-#### エラー通知メッセージ仕様
-
+**リクエスト:**
+```javascript
+var options = {
+  "method": "get",
+  "headers": headers
+};
+var response = UrlFetchApp.fetch("https://api.nature.global/1/appliances", options);
 ```
-【エラー】{ワークフロー名} 実行失敗
-発生時刻: {timestamp}
-対象API: {失敗したノード名}
-エラー内容: {error.message}
-HTTP Status: {error.statusCode}
-```
 
-#### GASエラーログ記録（OperationLogシートのG列）
-
-ノード[4]でGASのWebhookエンドポイントに以下をPOSTし、GASが `appendOperationLog()` を呼び出してスプレッドシートに記録する。
-
+**レスポンス（成功時 HTTP 200）:**
 ```json
-{
-  "action": "error_log",
-  "timestamp": "2026-04-29T10:05:00Z",
-  "targetApi": "Nature Remo API",
-  "errorDetail": "HTTPステータス 503",
-  "result": "失敗"
-}
+[
+  {
+    "id": "appliance-id-string",
+    "device": { "name": "エアコン" },
+    "type": "AC",
+    "aircon": {
+      "range": {
+        "modes": {
+          "cool": { "temp": ["18","19","20","21","22","23","24","25","26","27","28"] },
+          "dry":  { "temp": [] }
+        }
+      }
+    }
+  }
+]
 ```
+
+**レスポンスフィールド:**
+
+| フィールド | 型 | 説明 |
+|---|---|---|
+| `id` | 文字列 | **applianceId**。エアコン制御時のURLに使用する |
+| `device.name` | 文字列 | デバイス名。B10セルの値と照合して対象機器を特定する |
+| `type` | 文字列 | 機器種別。エアコンは `"AC"` |
+| `aircon.range.modes.cool.temp` | 文字列配列 | 冷房モードで設定可能な温度の一覧 |
+
+**applianceIdの取得手順:**
+1. 上記エンドポイントを1回実行してレスポンスを確認する
+2. `type === "AC"` かつ `device.name` がB10セルの値と一致するオブジェクトの `id` を取得する
+3. 取得した `id` をスプレッドシートの所定のセルに記録する（変動しないため再取得不要）
 
 ---
 
-## 5. 既存GASコードの改修・連携方針
+### POST /appliances/{applianceId}/aircon_settings — エアコン制御
 
-### 5.1 GAS側に追加するWebhookエンドポイント
+**用途:** エアコンの冷房・除湿・停止を制御する
 
-n8nからGASを呼び出す口として、`main.js` に `doPost(e)` 関数を追加する。これによりn8nはHTTP POSTでGASの各処理を起動できる。
+**エンドポイント:**
+```
+POST https://api.nature.global/1/appliances/{applianceId}/aircon_settings
+```
 
-**追加コード（main.js への追記）**
+**⚠️ リクエストの注意事項（必読）:**
+- `Content-Type` を指定してはいけない
+- `payload` を `JSON.stringify()` してはいけない
+- `temperature` は数値ではなく文字列で渡す
 
+**リクエスト（冷房開始の例）:**
 ```javascript
-/**
- * n8nからのHTTP POSTを受け取るエントリーポイント
- * Content-Type: application/json でbodyを送る
- */
-function doPost(e) {
-  var body = JSON.parse(e.postData.contents);
-  var action = body.action;
-  var result = {};
+var headers = {
+  'Authorization': 'Bearer ' + token
+  // Content-Type は指定しない
+};
+var payload = {
+  "button": "",         // 空文字でデフォルト動作
+  "temperature": "23"   // 文字列で渡す
+};
+var options = {
+  "method": "post",
+  "headers": headers,
+  "payload": payload    // JSON.stringify() しない
+};
+var url = "https://api.nature.global/1/appliances/" + applianceId + "/aircon_settings";
+UrlFetchApp.fetch(url, options);
+```
 
-  if (action === "run_every_5min") {
-    // Phase 1の既存メイン処理を呼び出す
-    result = runEvery5Minutes();
+**payloadパラメータ:**
 
-  } else if (action === "log_operation") {
-    // n8nからの操作ログ記録
-    appendOperationLog(
-      body.timestamp,
-      body.operation,
-      body.temp,
-      body.humidity,
-      body.di,
-      body.result,
-      body.errorDetail || ""
-    );
-    result = { success: true };
+| パラメータ | 型 | 必須 | 説明 |
+|---|---|---|---|
+| `button` | 文字列 | 必須 | 操作ボタン名。通常は空文字 `""` を指定する |
+| `temperature` | 文字列 | 任意 | 設定温度。停止時は不要 |
+| `operation_mode` | 文字列 | 任意 | `"cool"`（冷房）/ `"dry"`（除湿）/ `"warm"`（暖房） |
+| `button` に `"power-off"` | 文字列 | - | 停止時は `button` に `"power-off"` を指定する |
 
-  } else if (action === "error_log") {
-    // n8nからのエラーログ記録
-    appendOperationLog(
-      body.timestamp,
-      "APIエラー",
-      null, null, null,
-      "失敗",
-      body.targetApi + ": " + body.errorDetail
-    );
-    result = { success: true };
+**モード別のpayload設定:**
 
-  } else if (action === "reset_home_status") {
-    // 帰宅時の外出ステータスリセット（Phase 2）
-    resetOutingStatus();
-    result = { success: true };
+| 操作 | button | operation_mode | temperature |
+|---|---|---|---|
+| 冷房開始 | `""` | `"cool"` | `"23"`（設定温度） |
+| 除湿開始 | `""` | `"dry"` | 不要 |
+| 停止 | `"power-off"` | 不要 | 不要 |
 
-  } else {
-    result = { success: false, error: "Unknown action: " + action };
+**レスポンス（成功時 HTTP 200）:**
+```json
+{}
+```
+
+**GAS実装例（controlAircon）:**
+```javascript
+function controlAircon(token, applianceId, mode, temp) {
+  var headers = { 'Authorization': 'Bearer ' + token };
+  var payload = {};
+
+  if (mode === "cool") {
+    payload = { "button": "", "operation_mode": "cool", "temperature": String(temp) };
+  } else if (mode === "dry") {
+    payload = { "button": "", "operation_mode": "dry" };
+  } else if (mode === "off") {
+    payload = { "button": "power-off" };
   }
 
-  return ContentService
-    .createTextOutput(JSON.stringify(result))
-    .setMimeType(ContentService.MimeType.JSON);
+  var options = { "method": "post", "headers": headers, "payload": payload };
+  var url = "https://api.nature.global/1/appliances/" + applianceId + "/aircon_settings";
+
+  try {
+    var response = UrlFetchApp.fetch(url, options);
+    return { success: true };
+  } catch (e) {
+    // 1回リトライ
+    try {
+      var retry = UrlFetchApp.fetch(url, options);
+      return { success: true };
+    } catch (e2) {
+      return { success: false, error: e2.message };
+    }
+  }
 }
 ```
 
-**GASのデプロイ設定:**
+**戻り値:**
+```javascript
+{ success: true }
+// または
+{ success: false, error: "エラー内容" }
+```
 
-| 項目 | 設定値 |
-|---|---|
-| 実行する関数 | doPost |
-| アクセスできるユーザー | 全員（匿名） |
-| HTTPSの必須 | はい |
+---
 
-デプロイ後に発行されるURLが n8n HTTP RequestノードのエンドポイントURLとなる。URLは Secrets（スプレッドシート B9列相当）で管理し、コードにハードコードしない。
+## Discord Webhook API — Phase 1
 
-### 5.2 runEvery5Minutes の改修方針
+**用途:** 空調操作通知・定時報告・エラー通知をDiscordチャンネルへ送信する
 
-既存の `runEvery5Minutes()` は処理結果（操作内容・エラー有無）を戻り値として返すように改修し、n8nがレスポンスを元にDiscord通知・エラーハンドリングを分岐できるようにする。
+**エンドポイント:**
+```
+POST {Discord Webhook URL}
+```
 
-**改修後の戻り値仕様（JSON）:**
+**リクエスト共通仕様:**
+```javascript
+var options = {
+  "method": "post",
+  "contentType": "application/json",
+  "payload": JSON.stringify({ "content": "メッセージ本文" })
+};
+UrlFetchApp.fetch(webhookUrl, options);
+```
 
+> **NOTE:** Discord Webhook は `Content-Type: application/json` を指定する（Nature Remo APIとは異なる）
+
+**レスポンス（成功時 HTTP 204）:**
+```
+（レスポンスボディなし）
+```
+
+---
+
+### 通知フォーマット一覧
+
+#### 空調操作通知（sendAirconNotification）
+
+```
+【冷房開始】2025/04/22 14:05
+室温：26.5℃ / 湿度：72% / 不快指数：77.3
+設定温度：23℃
+```
+
+```
+【除湿開始】2025/04/22 14:05
+室温：25.0℃ / 湿度：74% / 不快指数：75.1
+```
+
+```
+【停止】2025/04/22 14:05
+室温：21.8℃ / 湿度：65% / 不快指数：70.2
+```
+
+**関数シグネチャ:**
+```javascript
+sendAirconNotification(webhookUrl, operation, temp, humidity, di)
+// operation: "冷房開始" / "除湿開始" / "停止"
+```
+
+---
+
+#### 定時報告通知（sendScheduledReport）
+
+```
+【定時報告】2025/04/22 14:00
+室温：26.5℃ / 湿度：72% / 不快指数：77.3
+エアコン：冷房稼働中
+```
+
+**関数シグネチャ:**
+```javascript
+sendScheduledReport(webhookUrl, temp, humidity, di, acState)
+// acState: "冷房稼働中" / "除湿稼働中" / "停止中"
+```
+
+---
+
+#### エラー通知（sendErrorNotification）
+
+```
+【エラー】Nature Remo API 呼び出し失敗
+発生時刻：2025/04/22 14:05
+詳細：HTTPステータス 503
+```
+
+**関数シグネチャ:**
+```javascript
+sendErrorNotification(webhookUrl, targetApi, errorDetail)
+// targetApi: "Nature Remo API" / "Discord Webhook API"
+```
+
+---
+
+# Phase 2
+
+## Nature Remo 3 API
+
+---
+
+### GET /appliances — 機器稼働状態取得
+
+**用途:** 外出時に監視対象機器（テレビ・照明・エアコン等）の電源状態を取得する
+
+**エンドポイント:**
+```
+GET https://api.nature.global/1/appliances
+```
+
+**レスポンス（Phase 2で追加参照するフィールド）:**
+```json
+[
+  {
+    "id": "appliance-id-string",
+    "device": { "name": "テレビ" },
+    "type": "IR",
+    "signals": [
+      { "id": "signal-id-string", "name": "電源", "image": "ico_power" }
+    ]
+  }
+]
+```
+
+**Phase 2で追加参照するフィールド:**
+
+| フィールド | 型 | 説明 |
+|---|---|---|
+| `type` | 文字列 | `"IR"`（赤外線リモコン）/ `"AC"`（エアコン）/ `"TV"` 等 |
+| `signals` | 配列 | 送信可能な信号の一覧 |
+| `signals[].id` | 文字列 | **signalId**。信号送信時のURLに使用する |
+| `signals[].name` | 文字列 | 信号名（例: `"電源"`）。対象信号の特定に使用する |
+
+**⚠️ 未確定事項:**
+- 監視対象機器（テレビ・照明等）の種類は未確定
+- 確定後、対象機器の `type` および `signals` の構造を本仕様書に追記する
+
+---
+
+### POST /appliances/{applianceId}/signals/{signalId}/send — 信号送信
+
+**用途:** テレビ・照明等の赤外線リモコン操作（電源オフ等）を送信する
+
+**エンドポイント:**
+```
+POST https://api.nature.global/1/appliances/{applianceId}/signals/{signalId}/send
+```
+
+**リクエスト:**
+```javascript
+var headers = { 'Authorization': 'Bearer ' + token };
+var options = {
+  "method": "post",
+  "headers": headers,
+  "payload": {}  // bodyなし
+};
+var url = "https://api.nature.global/1/appliances/" + applianceId
+        + "/signals/" + signalId + "/send";
+UrlFetchApp.fetch(url, options);
+```
+
+**レスポンス（成功時 HTTP 200）:**
+```json
+{}
+```
+
+**⚠️ 未確定事項:**
+- 監視対象機器が確定した後、各機器の `applianceId` と `signalId` を取得して本仕様書に追記する
+
+---
+
+### 電気代算出（推定値方式）
+
+**用途:** クーラーの稼働時間と消費電力から電気代を推定し、日次・週次・月次の上限超過をアラートする
+
+**算出方法:**
+
+```
+電気代（円）= 稼働時間（h）× 消費電力（kW）× 電力単価（円/kWh）
+```
+
+**パラメータ:**
+
+| パラメータ | 取得元 | 説明 |
+|---|---|---|
+| 稼働時間 | スプレッドシート（SensorLog） | エアコン状態が「冷房」または「除湿」の行数 × 5分 で算出する |
+| 消費電力 | スプレッドシート（Settings） | ユーザーが入力する（kW単位）。デフォルト値は未定 |
+| 電力単価 | スプレッドシート（Settings） | ユーザーが入力する（円/kWh単位）。デフォルト: 27円/kWh（全国平均） |
+
+**Settings シートへの追加セル（Phase 2で追加）:**
+
+| セル | 項目名 | デフォルト値 |
+|---|---|---|
+| B11 | 消費電力（kW） | （入力） |
+| B12 | 電力単価（円/kWh） | 27 |
+| B13 | 日次上限額（円） | （入力） |
+| B14 | 週次上限額（円） | （入力） |
+| B15 | 月次上限額（円） | （入力） |
+
+---
+
+## GAS doPost Webhook — GPS座標受信
+
+**用途:** IFTTT または iOS Shortcuts からGPS座標を受信し、在宅/外出の判定を行う
+
+**エンドポイント:**
+```
+POST https://script.google.com/macros/s/{deploymentId}/exec
+```
+
+**リクエスト（IFTTT / iOS Shortcuts から送信される）:**
 ```json
 {
-  "success": true,
-  "operation": "冷房開始",
-  "temp": 26.5,
-  "humidity": 72,
-  "di": 77.3,
-  "acState": "冷房",
-  "errorDetail": null
+  "lat": 35.6895,
+  "lng": 139.6917,
+  "timestamp": "2025-04-22T14:00:00Z"
 }
 ```
 
-操作なしの場合は `"operation": null` を返す。
+**リクエストフィールド:**
 
-### 5.3 データの整合性確保（記録タイミング）
-
-n8n と GAS が並行してスプレッドシートを操作することによる競合を防ぐため、以下の原則を定める。
-
-| データ種別 | 書き込み担当 | タイミング |
+| フィールド | 型 | 説明 |
 |---|---|---|
-| センサログ（SensorLogシート） | GAS（`appendSensorLog()`） | runEvery5Minutes の実行直後 |
-| 操作ログ（OperationLogシート） | GAS（`appendOperationLog()`） | n8nからPOST受信後、GASが記録 |
-| 設定値（Settingsシート） | ユーザー手動入力のみ | n8n・GAS ともに読み取り専用 |
-| 外出連続カウント（Settings B12） | GAS（doPost経由） | n8nのジオフェンス判定結果をGASに渡してGASが記録 |
-| 最終通知時刻（Settings B13） | GAS（`setLastNotifiedTime()`） | runEvery5Minutes 内で更新 |
-| エラーログ（OperationLog G列） | GAS（doPost: error_log）| n8nのError Triggerから呼び出し |
+| `lat` | 数値 | 緯度 |
+| `lng` | 数値 | 経度 |
+| `timestamp` | 文字列 | 送信日時（ISO 8601形式） |
 
-**原則: スプレッドシートへの書き込みは必ずGAS経由で行い、n8nがGoogle Sheetsノードで直接書き込まない。** これにより、GASが持つ書き込みロジック（列マッピング・型変換）を二重管理せずに済む。
+**GAS実装例（doPost）:**
+```javascript
+function doPost(e) {
+  var data = JSON.parse(e.postData.contents);
+  var lat  = data.lat;
+  var lng  = data.lng;
+  // ハーバーサイン式で自宅との距離を算出し、在宅/外出を判定する
+}
+```
+
+**ハーバーサイン式（距離算出）:**
+```javascript
+function calcDistance(lat1, lng1, lat2, lng2) {
+  var R = 6371; // 地球半径（km）
+  var dLat = (lat2 - lat1) * Math.PI / 180;
+  var dLng = (lng2 - lng1) * Math.PI / 180;
+  var a = Math.sin(dLat/2) * Math.sin(dLat/2)
+        + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180)
+        * Math.sin(dLng/2) * Math.sin(dLng/2);
+  var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  return R * c; // km単位
+}
+```
+
+**在宅/外出の判定ロジック:**
+
+| 条件 | 判定 | ステータス変更 |
+|---|---|---|
+| 距離 > ジオフェンス半径 が2回連続 | 外出 | 在宅 → 外出 |
+| 距離 ≤ ジオフェンス半径 が2回連続 | 在宅 | 外出 → 在宅 |
+| 1回のみ逸脱・復帰 | 誤検知として無視 | 変更なし |
+
+**Settings シートへの追加セル（Phase 2で追加）:**
+
+| セル | 項目名 | デフォルト値 |
+|---|---|---|
+| B16 | 自宅緯度 | （入力） |
+| B17 | 自宅経度 | （入力） |
+| B18 | ジオフェンス半径（m） | 200 |
+| B19 | GPS取得間隔（分） | 2 |
+| B20 | 室内高温アラートしきい値（℃） | 35 |
 
 ---
 
-## 6. 段階的な移行計画
+## Discord Webhook API — Phase 2
 
-| フェーズ | 内容 | 担当 |
-|---|---|---|
-| Step 1（現在） | GAS単独でPhase 1（在宅空調制御）を完成させる | 全員 |
-| Step 2 | GASに `doPost()` を追加してn8nから呼び出し可能にする | 江川（main.js 担当） |
-| Step 3 | n8nの「在宅時自動調温フロー」を構築してGASのScheduleトリガーと並走テストする | 鮫島（リーダー） |
-| Step 4 | GASのScheduleトリガーを無効化し、n8nのSchedule Triggerに一本化する | 鮫島 |
-| Step 5（Phase 2） | n8nにGPS Webhookフローを追加し、HITL込みの外出検知フローを実装する | 全員 |
+### 通知フォーマット一覧（追加分）
+
+#### 消し忘れ通知（sendForgetNotification）
+
+```
+【消し忘れ通知】2025/04/22 14:05
+外出を検知しました。以下の機器がオン状態です。
+
+・テレビ（稼働：2時間15分）
+・照明（稼働：3時間40分）
+
+操作ダッシュボード: https://docs.google.com/spreadsheets/d/【spreadsheetId】
+```
+
+**関数シグネチャ:**
+```javascript
+sendForgetNotification(webhookUrl, devices, dashboardUrl)
+// devices: [{ name: "テレビ", duration: "2時間15分" }, ...]
+```
 
 ---
 
-## 完了条件（Completion Criteria）
+#### 室内高温アラート（sendHeatAlert）
 
-- [ ] GASの `doPost()` がデプロイされ、n8nからのHTTP POSTで `runEvery5Minutes` が起動できる
-- [ ] n8nのSchedule Trigger（5分おき）が正常に稼働し、GAS `doPost()` を呼び出せる
-- [ ] Nature Remo APIへのHTTP RequestノードでContent-Type指定なし・form-data形式のPOSTが成功する
-- [ ] HTTP Requestノードで「Retry on Fail: 2回、5秒間隔」が設定されている
-- [ ] Error Triggerワークフローが稼働し、失敗時にDiscordへエラー通知が届く
-- [ ] エラー内容がスプレッドシートのOperationLogシートG列に記録される
-- [ ] （Phase 2）GPS Webhookエンドポイントが稼働し、IFTTTからの座標を受信できる
-- [ ] （Phase 2）外出確定時にDiscordのボタン付き通知が届き、ボタン押下でオフ命令が送信される
+```
+【室内高温アラート】2025/04/22 14:05
+外出中に室温が上限を超えました。
+現在の室温：36.2℃（しきい値：35℃）
+湿度：68%
+```
+
+**関数シグネチャ:**
+```javascript
+sendHeatAlert(webhookUrl, temp, humidity, threshold)
+```
+
+---
+
+#### 電気代アラート（sendElectricityAlert）
+
+```
+【電気代アラート】2025/04/22
+日次上限を超過しました。
+本日の推定電気代：520円（上限：500円）
+今月の累計：3,240円
+```
+
+**関数シグネチャ:**
+```javascript
+sendElectricityAlert(webhookUrl, period, current, limit, monthTotal)
+// period: "日次" / "週次" / "月次"
+```
+
+---
+
+## 未確定事項一覧
+
+| 項目 | 状態 | 確定後の対応 |
+|---|---|---|
+| 監視対象機器の種類（テレビ・照明等） | 未確定 | `GET /appliances` で `applianceId` / `signalId` を取得して追記 |
+| 各機器の消費電力（kW） | 未確定 | Settings シート B11 に入力する値を決定して追記 |
+| クーラーの消費電力（kW） | 未確定 | 同上 |
