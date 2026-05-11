@@ -11,6 +11,11 @@ function runEvery5Minutes() {
 		var nextAcState = controlPlan.acStateAfter;
 		appendSensorLog(now, sensorData.temp, sensorData.humidity, sensorData.illuminance, di, nextAcState);
 
+		// 高温アラート判定
+		if (settings.discordUrl && sensorData.temp > settings.highTempAlertThreshold) {
+			sendHighTempAlertNotification(settings.discordUrl, sensorData.temp, sensorData.humidity, di);
+		}
+
 		if (controlPlan.action) {
 			var result = controlAircon(settings.remoToken, settings.deviceName, controlPlan.mode, settings.tempMax);
 			var opResult = result.success ? "成功" : "失敗";

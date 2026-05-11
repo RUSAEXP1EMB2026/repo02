@@ -6,7 +6,7 @@ var SHEET_NAMES = {
 
 function getSettings() {
 	var sheet = getSheetByName_(SHEET_NAMES.SETTINGS);
-	var values = sheet.getRange("B2:B10").getValues().map(function (row) {
+	var values = sheet.getRange("B2:B11").getValues().map(function (row) {
 		return row[0];
 	});
 
@@ -19,7 +19,8 @@ function getSettings() {
 		notifyInterval: Number(values[5] || 60),
 		remoToken: String(values[6] || "").trim(),
 		discordUrl: String(values[7] || "").trim(),
-		deviceName: String(values[8] || "").trim()
+		deviceName: String(values[8] || "").trim(),
+		highTempAlertThreshold: Number(values[9] || 35)
 	};
 }
 
