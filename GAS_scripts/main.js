@@ -12,8 +12,12 @@ function runEvery5Minutes() {
 		appendSensorLog(now, sensorData.temp, sensorData.humidity, sensorData.illuminance, di, nextAcState);
 
 		// 高温アラート判定
-		if (settings.discordUrl && sensorData.temp > settings.highTempAlertThreshold) {
-			sendHighTempAlertNotification(settings.discordUrl, sensorData.temp, sensorData.humidity, di);
+		try {
+			if (settings.discordUrl && settings.highTempAlertThreshold != null && sensorData.temp > settings.highTempAlertThreshold) {
+				sendHighTempAlertNotification(settings.discordUrl, sensorData.temp, sensorData.humidity, di);
+			}
+		} catch (alertError) {
+			Logger.log("High temp alert notification failed: " + alertError);
 		}
 
 		if (controlPlan.action) {

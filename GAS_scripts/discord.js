@@ -80,8 +80,13 @@ function sendOutdoorNotification(webhookUrl, deviceList, spreadsheetUrl) {
 		return;
 	}
 
+	if (!Array.isArray(deviceList) || deviceList.length === 0) {
+		Logger.log("sendOutdoorNotification: 無効なdeviceList");
+		return;
+	}
+
 	var deviceInfo = deviceList.map(function (device) {
-		var info = device.name;
+		var info = device.name || "不明なデバイス";
 		if (device.operatingTime) {
 			info += "（稼働中: " + device.operatingTime + "分）";
 		}
