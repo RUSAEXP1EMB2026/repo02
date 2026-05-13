@@ -36,18 +36,28 @@ function testTemperatureControl() {
 	Logger.log("✓ 高温（25℃）: 冷房開始");
 	
 	// テストケース2: 気温低い・湿度高い → 除湿開始
-	var result2 = evaluateAndControl(settings, { temp: 23, humidity: 75 }, "停止");
+	var result2 = evaluateAndControl(settings, { temp: 22.5, humidity: 75 }, "停止");
 	testAssert_(result2.action === true && result2.mode === "dry", "除湿判定失敗");
-	Logger.log("✓ 中温・高湿（23℃, 75%）: 除湿開始");
+	Logger.log("✓ 中温・高湿（22.5℃, 75%）: 除湿開始");
 	
-	// テストケース3: 気温低い・冷房稼働中 → 停止
-	var result3 = evaluateAndControl(settings, { temp: 20, humidity: 50 }, "冷房");
-	testAssert_(result3.action === true && result3.mode === "off", "低温時の停止判定失敗");
+	// テストケース3: 室温23℃以上では除湿しない
+	var result3 = evaluateAndControl(settings, { temp: 23, humidity: 80 }, "停止");
+	testAssert_(result3.action === false, "23℃以上で除湿判定される");
+	Logger.log("✓ 23℃以上（23℃, 80%）: 除湿せず");
+	
+	// テストケース4: 気温低い・冷房稼働中 → 停止
+	var result4 = evaluateAndControl(settings, { temp: 20, humidity: 50 }, "冷房");
+	testAssert_(result4.action === true && result4.mode === "off", "低温時の停止判定失敗");
 	Logger.log("✓ 低温（20℃）・冷房稼働中: 停止");
 	
-	// テストケース4: 目標範囲内 → 操作なし
-	var result4 = evaluateAndControl(settings, { temp: 22.5, humidity: 60 }, "停止");
-	testAssert_(result4.action === false, "目標範囲内での操作判定失敗");
+	// テストケース5: 除湿稼働中も停止判定
+	var result5 = evaluateAndControl(settings, { temp: 20, humidity: 50 }, "除湿");
+	testAssert_(result5.action === true && result5.mode === "off", "除湿中の停止判定失敗");
+	Logger.log("✓ 低温（20℃）・除湿稼働中: 停止");
+	
+	// テストケース6: 目標範囲内 → 操作なし
+	var result6 = evaluateAndControl(settings, { temp: 22.5, humidity: 60 }, "停止");
+	testAssert_(result6.action === false, "目標範囲内での操作判定失敗");
 	Logger.log("✓ 目標範囲内（22.5℃）: 操作なし");
 	
 	Logger.log("✓ 温度制御ロジックテスト完了");

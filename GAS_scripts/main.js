@@ -60,6 +60,24 @@ function runEvery5Minutes() {
 				appendErrorLog(now, "Discord (定時レポート)", String(reportError));
 			}
 		}
+
+		// ===== Phase 2: 外出中の室温監視 =====
+		try {
+			// GPS Webhookで判定された外出状態を取得
+			var outdoorStates = getLastOutdoorStates();
+			var isCurrentlyOutdoor = outdoorStates.previous1; // 最新の外出判定結果
+
+			// 外出中の場合、高温チェックを実行
+			if (isCurrentlyOutdoor && settings.discordUrl && settings.highTempAlertThreshold != null) {
+				if (sensorData.temp > settings.highTempAlertThreshold) {
+					sendHighTempAlertNotification(settings.discordUrl, sensorData.temp, sensorData.humidity, di);
+					Logger.log("外出中高温アラート送信: " + sensorData.temp + "℃");
+				}
+			}
+		} catch (outdoorError) {
+			Logger.log("外出監視エラー: " + outdoorError);
+			appendErrorLog(now, "外出監視", String(outdoorError));
+		}
 	} catch (e) {
 		Logger.log("runEvery5Minutes error: " + e);
 		appendErrorLog(now, "runEvery5Minutes", String(e));
