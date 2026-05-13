@@ -18,6 +18,7 @@ function runEvery5Minutes() {
 			}
 		} catch (alertError) {
 			Logger.log("High temp alert notification failed: " + alertError);
+			appendErrorLog(now, "高温アラート通知", String(alertError));
 		}
 
 		if (controlPlan.action) {
@@ -35,17 +36,33 @@ function runEvery5Minutes() {
 				errorDetail
 			);
 
+			// エアコン制御失敗時はエラーログに記録
+			if (!result.success) {
+				appendErrorLog(now, "Nature Remo (エアコン制御)", errorDetail);
+			}
+
 			if (settings.discordUrl) {
-				sendAirconNotification(settings.discordUrl, controlPlan.operation, sensorData.temp, sensorData.humidity, di);
+				try {
+					sendAirconNotification(settings.discordUrl, controlPlan.operation, sensorData.temp, sensorData.humidity, di);
+				} catch (notificationError) {
+					Logger.log("Aircon notification failed: " + notificationError);
+					appendErrorLog(now, "Discord (エアコン通知)", String(notificationError));
+				}
 			}
 		}
 
 		if (settings.discordUrl && shouldSendScheduledReport_(settings, now)) {
-			sendScheduledReport(settings.discordUrl, sensorData.temp, sensorData.humidity, di, nextAcState);
-			setLastNotifiedTime(now);
+			try {
+				sendScheduledReport(settings.discordUrl, sensorData.temp, sensorData.humidity, di, nextAcState);
+				setLastNotifiedTime(now);
+			} catch (reportError) {
+				Logger.log("Scheduled report failed: " + reportError);
+				appendErrorLog(now, "Discord (定時レポート)", String(reportError));
+			}
 		}
 	} catch (e) {
 		Logger.log("runEvery5Minutes error: " + e);
+		appendErrorLog(now, "runEvery5Minutes", String(e));
 
 		try {
 			var fallback = getSettings();
@@ -54,6 +71,7 @@ function runEvery5Minutes() {
 			}
 		} catch (ignored) {
 			Logger.log("error notify failed: " + ignored);
+			appendErrorLog(new Date(), "Discord (エラー通知)", String(ignored));
 		}
 	}
 }

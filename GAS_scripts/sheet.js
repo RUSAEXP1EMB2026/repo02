@@ -1,7 +1,8 @@
 var SHEET_NAMES = {
 	SETTINGS: "Settings",
 	SENSOR_LOG: "SensorLog",
-	OPERATION_LOG: "OperationLog"
+	OPERATION_LOG: "OperationLog",
+	ERROR_LOG: "ErrorLog"
 };
 
 function getSettings() {
@@ -60,4 +61,56 @@ function getSheetByName_(name) {
 		throw new Error("Sheet not found: " + name);
 	}
 	return sheet;
+}
+
+// ===== エラーハンドリング機能 =====
+
+/**
+ * APIエラーをシートに記録
+ * @param {Date} timestamp - エラー発生日時
+ * @param {string} apiName - 対象API名（例: "Nature Remo", "Discord"）
+ * @param {string} errorDetail - エラーの詳細内容
+ */
+function appendErrorLog(timestamp, apiName, errorDetail) {
+	try {
+		var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAMES.ERROR_LOG);
+		if (!sheet) {
+			// ErrorLog シートが存在しない場合は作成
+			sheet = SpreadsheetApp.getActiveSpreadsheet().insertSheet(SHEET_NAMES.ERROR_LOG);
+			sheet.appendRow(["発生日時", "対象API", "エラー内容"]);
+		}
+		
+		sheet.appendRow([timestamp, apiName, errorDetail]);
+	} catch (e) {
+		Logger.log("appendErrorLog error: " + e);
+	}
+}
+
+/**
+ * 最近のエラーログを取得（直近10件）
+ * @returns {Array} エラーログの配列
+ */
+function getRecentErrors(limit) {
+	try {
+		if (!limit) limit = 10;
+		var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAMES.ERROR_LOG);
+		if (!sheet || sheet.getLastRow() < 2) {
+			return [];
+		}
+		
+		var lastRow = sheet.getLastRow();
+		var startRow = Math.max(2, lastRow - limit + 1);
+		var values = sheet.getRange(startRow, 1, lastRow - startRow + 1, 3).getValues();
+		
+		return values.map(function (row) {
+			return {
+				timestamp: row[0],
+				apiName: row[1],
+				errorDetail: row[2]
+			};
+		});
+	} catch (e) {
+		Logger.log("getRecentErrors error: " + e);
+		return [];
+	}
 }
