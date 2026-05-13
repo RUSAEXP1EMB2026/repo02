@@ -75,6 +75,21 @@ function sendHighTempAlertNotification(webhookUrl, temp, humidity, di) {
 	sendDiscordMessage_(webhookUrl, message);
 }
 
+function sendOutdoorHighTempAlertNotification(webhookUrl, temp, humidity, di) {
+	if (!webhookUrl) {
+		return;
+	}
+
+	var message = [
+		"【外出中の高温アラート】" + formatDate_(new Date()),
+		"室温: " + temp + "℃ / 湿度: " + humidity + "% / 不快指数: " + di,
+		"⚠️ 外出中に室温が高くなっています",
+		"帰宅後、エアコン設定を確認してください"
+	].join("\n");
+
+	sendDiscordMessage_(webhookUrl, message);
+}
+
 function sendOutdoorNotification(webhookUrl, deviceList, spreadsheetUrl) {
 	if (!webhookUrl) {
 		return;
