@@ -40,12 +40,24 @@ function doPost(e) {
 
     // optional: append to LocationLog sheet if exists
     try {
-      var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('LocationLog');
-      if (sheet) {
-        sheet.appendRow([new Date(), lat, lon, distance, status]);
+      var spreadsheetId = props.getProperty('SPREADSHEET_ID');
+      if (!spreadsheetId) {
+        Logger.log('Location log skipped: SPREADSHEET_ID script property is missing');
+      } else {
+        try {
+          var ss = SpreadsheetApp.openById(spreadsheetId);
+          var locationSheet = ss.getSheetByName('LocationLog');
+          if (locationSheet) {
+            locationSheet.appendRow([new Date(), lat, lon, distance, status]);
+          } else {
+            Logger.log('Location log skipped: sheet "LocationLog" not found in spreadsheet ' + spreadsheetId);
+          }
+        } catch (err2) {
+          Logger.log('Location log append failed: ' + err2);
+        }
       }
     } catch (err) {
-      Logger.log('Location log append failed: ' + err);
+      Logger.log('Location log outer error: ' + err);
     }
 
     return ContentService.createTextOutput(JSON.stringify({ status: status, distance: distance })).setMimeType(ContentService.MimeType.JSON);
