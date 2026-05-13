@@ -97,3 +97,9 @@ function calcDistanceMeters(lat1, lon1, lat2, lon2) {
   var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
   return R * c;
 }
+
+function isUserOutdoor() {
+  var props = PropertiesService.getScriptProperties();
+  var status = props.getProperty('HOME_STATUS') || '在宅';
+  return status === '外出';
+}
