@@ -11,9 +11,10 @@ function evaluateAndControl(settings, sensorData, currentAcState) {
 		};
 	}
 
+	// 除湿モード: 湿度 ≥ 70% かつ 室温 < 23℃
 	if (
 		humidity >= settings.humidityThreshold &&
-		temp <= settings.tempMax &&
+		temp < 23 &&
 		(currentAcState === "停止" || currentAcState === "冷房")
 	) {
 		return {
