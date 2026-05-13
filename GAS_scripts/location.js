@@ -29,6 +29,22 @@ function doPost(e) {
     var homeLon = Number(props.getProperty('HOME_LON') || '0');
     var radius = Number(props.getProperty('HOME_RADIUS') || '150'); // meters
 
+    // Validate HOME_LAT and HOME_LON configuration
+    if (isNaN(homeLat) || isNaN(homeLon) || homeLat === 0 && homeLon === 0) {
+      var homeLat_raw = props.getProperty('HOME_LAT');
+      var homeLon_raw = props.getProperty('HOME_LON');
+      if (!homeLat_raw || !homeLon_raw) {
+        var errorMsg = 'Configuration error: HOME_LAT and HOME_LON must be set in script properties';
+        Logger.log(errorMsg);
+        throw new Error(errorMsg);
+      }
+      if (isNaN(homeLat) || isNaN(homeLon)) {
+        var parseMsg = 'Configuration error: HOME_LAT and HOME_LON must be valid numbers';
+        Logger.log(parseMsg);
+        throw new Error(parseMsg);
+      }
+    }
+
     var distance = calcDistanceMeters(lat, lon, homeLat, homeLon);
     var status = distance <= radius ? '在宅' : '外出';
 

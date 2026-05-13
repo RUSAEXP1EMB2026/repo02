@@ -78,6 +78,9 @@ function appendErrorLog(timestamp, apiName, errorDetail) {
 			// ErrorLog シートが存在しない場合は作成
 			sheet = SpreadsheetApp.getActiveSpreadsheet().insertSheet(SHEET_NAMES.ERROR_LOG);
 			sheet.appendRow(["発生日時", "対象API", "エラー内容"]);
+		} else if (sheet.getLastRow() === 0) {
+			// Sheet exists but is empty, add headers
+			sheet.appendRow(["発生日時", "対象API", "エラー内容"]);
 		}
 		
 		sheet.appendRow([timestamp, apiName, errorDetail]);
@@ -87,8 +90,9 @@ function appendErrorLog(timestamp, apiName, errorDetail) {
 }
 
 /**
- * 最近のエラーログを取得（直近10件）
- * @returns {Array} エラーログの配列
+ * 最近のエラーログを取得
+ * @param {number} [limit=10] 取得するログの上限（省略時は10件）
+ * @returns {Array} エラーログの配列。配列の長さはlimitパラメータに依存します
  */
 function getRecentErrors(limit) {
 	try {

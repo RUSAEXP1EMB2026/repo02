@@ -162,7 +162,7 @@ function runIntegrationTest() {
 		
 		Logger.log("\n最新のセンサデータを取得中...");
 		var sensorData = getSensorData(settings.remoToken, settings.deviceName);
-		Logger.log("✓ セッサデータ取得成功:");
+		Logger.log("✓ センサーデータ取得成功:");
 		Logger.log("  - 気温: " + sensorData.temp + "℃");
 		Logger.log("  - 湿度: " + sensorData.humidity + "%");
 		Logger.log("  - 照度: " + sensorData.illuminance + "lux");
