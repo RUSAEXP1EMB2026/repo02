@@ -1,0 +1,71 @@
+function doPost(e) {
+  try {
+    var raw = null;
+    if (e && e.postData && e.postData.contents) {
+      raw = e.postData.contents;
+    } else if (e && e.parameter) {
+      raw = JSON.stringify(e.parameter);
+    }
+
+    var payload = {};
+    if (raw) {
+      try {
+        payload = JSON.parse(raw);
+      } catch (err) {
+        // fallback: try to parse as query-like string
+        payload = e && e.parameter ? e.parameter : {};
+      }
+    }
+
+    var lat = Number(payload.lat || payload.latitude || payload.latitude_deg || payload.latitude_deg || payload.lat0 || payload.latitude0 || payload.latLngLat || payload.latlng_lat || payload.latitude);
+    var lon = Number(payload.lon || payload.lng || payload.longitude || payload.longitude_deg || payload.lon0 || payload.longitude0 || payload.latLngLon || payload.latlng_lon || payload.longitude);
+
+    if (isNaN(lat) || isNaN(lon)) {
+      return ContentService.createTextOutput(JSON.stringify({ error: "no_coordinates" })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    var props = PropertiesService.getScriptProperties();
+    var homeLat = Number(props.getProperty('HOME_LAT') || '0');
+    var homeLon = Number(props.getProperty('HOME_LON') || '0');
+    var radius = Number(props.getProperty('HOME_RADIUS') || '150'); // meters
+
+    var distance = calcDistanceMeters(lat, lon, homeLat, homeLon);
+    var status = distance <= radius ? '在宅' : '外出';
+
+    props.setProperty('HOME_STATUS', status);
+    props.setProperty('HOME_LAST_LAT', String(lat));
+    props.setProperty('HOME_LAST_LON', String(lon));
+    props.setProperty('HOME_LAST_DISTANCE', String(distance));
+    props.setProperty('HOME_LAST_UPDATED', new Date().toISOString());
+
+    // optional: append to LocationLog sheet if exists
+    try {
+      var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('LocationLog');
+      if (sheet) {
+        sheet.appendRow([new Date(), lat, lon, distance, status]);
+      }
+    } catch (err) {
+      Logger.log('Location log append failed: ' + err);
+    }
+
+    return ContentService.createTextOutput(JSON.stringify({ status: status, distance: distance })).setMimeType(ContentService.MimeType.JSON);
+  } catch (e) {
+    Logger.log('doPost error: ' + e);
+    return ContentService.createTextOutput(JSON.stringify({ error: String(e) })).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+function calcDistanceMeters(lat1, lon1, lat2, lon2) {
+  // Haversine formula
+  function toRad(v) { return (v * Math.PI) / 180; }
+
+  var R = 6371000; // Earth radius in meters
+  var φ1 = toRad(lat1);
+  var φ2 = toRad(lat2);
+  var Δφ = toRad(lat2 - lat1);
+  var Δλ = toRad(lon2 - lon1);
+
+  var a = Math.sin(Δφ/2) * Math.sin(Δφ/2) + Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ/2) * Math.sin(Δλ/2);
+  var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  return R * c;
+}
