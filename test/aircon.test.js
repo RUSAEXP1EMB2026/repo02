@@ -196,3 +196,77 @@ function runIntegrationTest() {
 		Logger.log("✗ 統合テスト失敗: " + String(e));
 	}
 }
+
+/**
+ * モック付きユニットテストサンプル: getSensorData 正常系
+ */
+function testGetSensorDataMock() {
+	Logger.log("\n【モックテスト】getSensorData 正常系モック");
+
+	// オリジナル退避
+	var origFetch = fetchWithRetry_;
+
+	// モック: devices 配列を返す
+	fetchWithRetry_ = function (url, options) {
+		return {
+			success: true,
+			body: JSON.stringify([
+				{
+					name: "Device1",
+					newest_events: {
+						te: { val: 24 },
+						hu: { val: 55 },
+						il: { val: 120 }
+					}
+				}
+			])
+		};
+	};
+
+	var res = getSensorData("dummy_token", "Device1");
+	testAssert_(res.temp === 24 && res.humidity === 55 && res.illuminance === 120, "getSensorData mock 正常系失敗");
+	Logger.log("✓ getSensorData モック正常系: OK");
+
+	// 復元
+	fetchWithRetry_ = origFetch;
+}
+
+/**
+ * モック付きユニットテストサンプル: controlAircon 成功/失敗をテスト
+ */
+function testControlAirconMock() {
+	Logger.log("\n【モックテスト】controlAircon 成功/失敗");
+
+	var origResolve = resolveApplianceId_;
+	var origFetch = fetchWithRetry_;
+
+	// resolveApplianceId_ をモック
+	resolveApplianceId_ = function (token, deviceName) {
+		return "appliance123";
+	};
+
+	// 正常系: aircon_settings への POST が成功するモック
+	fetchWithRetry_ = function (url, options) {
+		if (url.indexOf("/aircon_settings") !== -1) {
+			return { success: true, body: "" };
+		}
+		return { success: true, body: JSON.stringify([{ id: "appliance123", nickname: "Device1" }]) };
+	};
+
+	var r1 = controlAircon("dummy", "Device1", "cool", 23);
+	testAssert_(r1.success === true, "controlAircon モック正常系失敗");
+	Logger.log("✓ controlAircon モック正常系: OK");
+
+	// 失敗系: ネットワークエラーを返すモック
+	fetchWithRetry_ = function (url, options) {
+		return { success: false, error: "network error" };
+	};
+
+	var r2 = controlAircon("dummy", "Device1", "cool", 23);
+	testAssert_(r2.success === false, "controlAircon モック失敗系期待値が違う");
+	Logger.log("✓ controlAircon モック失敗系: OK");
+
+	// 復元
+	resolveApplianceId_ = origResolve;
+	fetchWithRetry_ = origFetch;
+}

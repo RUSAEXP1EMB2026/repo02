@@ -1,0 +1,15 @@
+# Settings (説明: 値は B2:B11 に設定)
+# tempMin,tempMax,humidityThreshold,notifyStart,notifyEnd,notifyInterval,remoToken,discordUrl,deviceName,highTempAlertThreshold
+22,23,70,7,23,60,,https://discord.example/webhook,MyRemoDevice,35
+
+# SensorLog
+Timestamp,Temp,Humidity,Illuminance,DI,ACState
+
+# OperationLog
+Timestamp,Operation,Temp,Humidity,DI,Result,ErrorDetail
+
+# ErrorLog
+Timestamp,API,ErrorDetail
+
+# LocationLog
+Timestamp,Lat,Lon,Distance,Status

@@ -1,0 +1,30 @@
+name: Run GAS tests via clasp (manual)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+      - name: Install clasp
+        run: npm install -g @google/clasp
+      - name: Configure service account
+        env:
+          SA_JSON: ${{ secrets.CLASP_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -z "$SA_JSON" ]; then echo "CLASP_SERVICE_ACCOUNT_JSON not set"; exit 1; fi
+          echo "$SA_JSON" > /tmp/sa.json
+      - name: Login clasp with service account
+        run: npx @google/clasp login --creds /tmp/sa.json
+      - name: Push and run tests
+        env:
+          SCRIPT_ID: ${{ secrets.SCRIPT_ID }}
+        run: |
+          npx @google/clasp push
+          npx @google/clasp run "runAllTests" --scriptId "$SCRIPT_ID"
